@@ -1,0 +1,27 @@
+{
+  "port": 20128,
+  "host": "127.0.0.1",
+  "apiKey": "",
+
+  "routing": {
+    "strategy": "priority",
+    "order": [],
+    "cooldownSeconds": {
+      "429": 60,
+      "5xx": 15,
+      "401": 1800
+    }
+  },
+
+  "compression": {
+    "enabled": true,
+    "maxContextTokens": 32000,
+    "maxMessageChars": 60000
+  },
+
+  "timeoutMs": 120000,
+
+  "providers": {},
+
+  "customProviders": []
+}
