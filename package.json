@@ -1,0 +1,31 @@
+{
+  "name": "socksroute",
+  "version": "0.1.0",
+  "description": "SocksRoute — your own from-scratch AI router: one OpenAI- and Anthropic-compatible endpoint, many free-tier AI providers, automatic fallback, token compression. Runs anywhere Node runs, including Termux.",
+  "type": "module",
+  "main": "server.mjs",
+  "bin": {
+    "socksroute": "server.mjs"
+  },
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/smoke.test.mjs"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "keywords": [
+    "ai",
+    "router",
+    "gateway",
+    "llm",
+    "openai",
+    "anthropic",
+    "claude-code",
+    "termux",
+    "free",
+    "zero-dependency"
+  ],
+  "license": "MIT"
+}

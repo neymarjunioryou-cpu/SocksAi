@@ -1,0 +1,35 @@
+{
+  "port": 20128,
+  "host": "127.0.0.1",
+  "apiKey": "",
+
+  "routing": {
+    "strategy": "priority",
+    "order": [],
+    "cooldownSeconds": {
+      "429": 60,
+      "5xx": 15,
+      "401": 1800
+    }
+  },
+
+  "compression": {
+    "enabled": true,
+    "maxContextTokens": 32000,
+    "maxMessageChars": 60000
+  },
+
+  "timeoutMs": 120000,
+
+  "providers": {
+    "mock": { "enabled": true },
+    "pollinations": { "enabled": true },
+    "gemini": { "enabled": false, "envKey": "GEMINI_API_KEY" },
+    "groq": { "enabled": false, "envKey": "GROQ_API_KEY" },
+    "openrouter": { "enabled": false, "envKey": "OPENROUTER_API_KEY" },
+    "cerebras": { "enabled": false, "envKey": "CEREBRAS_API_KEY" },
+    "mistral": { "enabled": false, "envKey": "MISTRAL_API_KEY" }
+  },
+
+  "customProviders": []
+}

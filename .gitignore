@@ -1,0 +1,11 @@
+# dependencies
+node_modules/
+
+# local secrets & runtime state (never commit these!)
+config.json
+data/
+
+# logs & OS junk
+*.log
+.DS_Store
+Thumbs.db
