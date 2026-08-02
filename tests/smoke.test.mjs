@@ -171,3 +171,147 @@ test('unknown route → 404 JSON', async () => {
   assert.equal(json.error.code, 'not_found');
   await srv.close();
 });
+
+// ---------------------------------------------------------------------------
+// Admin API (the dashboard's backend)
+
+test('admin: save + remove provider key via /api', async () => {
+  const srv = await start(makeConfig());
+  // save
+  let res = await fetch(`${srv.base}/api/providers/gemini/key`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key: 'AIza-abc123-secret' }),
+  });
+  assert.equal(res.status, 200);
+  let status = await (await fetch(`${srv.base}/api/status`)).json();
+  const gemini = status.providers.find((p) => p.id === 'gemini');
+  assert.equal(gemini.hasKey, true);
+  // masked config must never leak the key
+  const cfg = await (await fetch(`${srv.base}/api/config`)).json();
+  assert.ok(!JSON.stringify(cfg).includes('AIza-abc123-secret'), 'key is masked');
+  assert.equal(cfg.providers.gemini.apiKey, 'AIza••••cret');
+  // remove
+  res = await fetch(`${srv.base}/api/providers/gemini/key`, { method: 'DELETE' });
+  assert.equal(res.status, 200);
+  status = await (await fetch(`${srv.base}/api/status`)).json();
+  assert.equal(status.providers.find((p) => p.id === 'gemini').hasKey, false);
+  await srv.close();
+});
+
+test('admin: enable/disable provider toggle', async () => {
+  const srv = await start(makeConfig());
+  let res = await fetch(`${srv.base}/api/providers/gemini/enabled`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(res.status, 200);
+  let status = await (await fetch(`${srv.base}/api/status`)).json();
+  assert.equal(status.providers.find((p) => p.id === 'gemini').enabled, true);
+  await fetch(`${srv.base}/api/providers/gemini/enabled`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  status = await (await fetch(`${srv.base}/api/status`)).json();
+  assert.equal(status.providers.find((p) => p.id === 'gemini').enabled, false);
+  await srv.close();
+});
+
+test('admin: custom provider CRUD', async () => {
+  const srv = await start(makeConfig());
+  // create
+  let res = await fetch(`${srv.base}/api/providers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'myapi', name: 'My API', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test', models: 'my-model, other-model' }),
+  });
+  assert.equal(res.status, 200);
+  let models = await (await fetch(`${srv.base}/v1/models`)).json();
+  assert.ok(models.data.some((m) => m.id === 'my-model'));
+  assert.ok(models.data.some((m) => m.id === 'other-model'));
+  // duplicate → 409
+  res = await fetch(`${srv.base}/api/providers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'myapi', baseUrl: 'https://api.example.com/v1' }),
+  });
+  assert.equal(res.status, 409);
+  // update
+  res = await fetch(`${srv.base}/api/providers/myapi`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ models: ['new-only'], note: 'updated' }),
+  });
+  assert.equal(res.status, 200);
+  models = await (await fetch(`${srv.base}/v1/models`)).json();
+  assert.ok(models.data.some((m) => m.id === 'new-only'));
+  assert.ok(!models.data.some((m) => m.id === 'my-model'));
+  // delete
+  res = await fetch(`${srv.base}/api/providers/myapi`, { method: 'DELETE' });
+  assert.equal(res.status, 200);
+  models = await (await fetch(`${srv.base}/v1/models`)).json();
+  assert.ok(!models.data.some((m) => m.id === 'new-only'));
+  await srv.close();
+});
+
+test('admin: routing strategy update', async () => {
+  const srv = await start(makeConfig());
+  let res = await fetch(`${srv.base}/api/routing`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ strategy: 'round-robin', order: ['mock', 'broken'] }),
+  });
+  assert.equal(res.status, 200);
+  let status = await (await fetch(`${srv.base}/api/status`)).json();
+  assert.equal(status.routing.strategy, 'round-robin');
+  assert.deepEqual(status.routing.order, ['mock', 'broken']);
+  // invalid strategy → 400
+  res = await fetch(`${srv.base}/api/routing`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ strategy: 'banana' }),
+  });
+  assert.equal(res.status, 400);
+  await srv.close();
+});
+
+test('admin: test provider endpoint (mock)', async () => {
+  const srv = await start(makeConfig());
+  const res = await fetch(`${srv.base}/api/test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ providerId: 'mock' }),
+  });
+  const json = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(json.ok, true);
+  assert.equal(json.providerId, 'mock');
+  assert.match(json.snippet, /pong/i);
+  await srv.close();
+});
+
+test('admin: event log endpoint', async () => {
+  const srv = await start(makeConfig());
+  await fetch(`${srv.base}/api/test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ providerId: 'mock' }),
+  });
+  const res = await fetch(`${srv.base}/api/logs`);
+  const json = await res.json();
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(json.logs));
+  assert.ok(json.logs.some((l) => l.msg.includes('Test')));
+  await srv.close();
+});
+
+test('admin routes require auth when apiKey is set', async () => {
+  const srv = await start(makeConfig({ apiKey: 'super-secret' }));
+  const denied = await fetch(`${srv.base}/api/status`);
+  assert.equal(denied.status, 401);
+  const allowed = await fetch(`${srv.base}/api/status`, { headers: { authorization: 'Bearer super-secret' } });
+  assert.equal(allowed.status, 200);
+  await srv.close();
+});

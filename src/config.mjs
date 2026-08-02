@@ -75,6 +75,32 @@ export function loadConfig({ configPath = join(ROOT, 'config.json'), env = proce
   if (env.HOST) config.host = env.HOST;
   if (env.SOCKSROUTE_API_KEY) config.apiKey = env.SOCKSROUTE_API_KEY;
   if (env.SOCKSROUTE_DATA_DIR) config.dataDir = env.SOCKSROUTE_DATA_DIR;
+  if (env.SOCKSROUTE_STORAGE_KEY) config.storageKey = env.SOCKSROUTE_STORAGE_KEY;
 
   return config;
+}
+
+/**
+ * Merge the runtime state (dashboard-managed settings + keys) on top of the
+ * base config. Precedence (low → high):
+ *   config.json / env  ←  settings.json  ←  keys.json
+ */
+export function buildRuntimeConfig(base, settings = {}, keys = {}) {
+  const cfg = JSON.parse(JSON.stringify(base));
+  cfg.providers = { ...(base.providers || {}) };
+
+  for (const [id, st] of Object.entries(settings.providers || {})) {
+    cfg.providers[id] = { ...(cfg.providers[id] || {}), ...st };
+  }
+  for (const [id, k] of Object.entries(keys || {})) {
+    if (k) cfg.providers[id] = { ...(cfg.providers[id] || {}), apiKey: k };
+  }
+  if (settings.routing) cfg.routing = { ...(cfg.routing || {}), ...settings.routing };
+  // customProviders only overrides when the dashboard has explicitly saved a list
+  // (initial state has no customProviders key, so config.json's list stays active)
+  if (Object.prototype.hasOwnProperty.call(settings, 'customProviders')) {
+    cfg.customProviders = settings.customProviders;
+  }
+
+  return cfg;
 }

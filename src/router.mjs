@@ -1,5 +1,5 @@
 // SocksRoute — the brain: provider selection, cooldowns, fallback, compression.
-import { getAllDefs, mockChat, openAIChat } from './providers.mjs';
+import { getAllDefs, mockChat, openAIChat, anthropicChat, discoverModels } from './providers.mjs';
 import { estimateTokens, pruneMessages } from './tokens.mjs';
 
 export class Router {
@@ -7,11 +7,20 @@ export class Router {
     this.config = config;
     this.usage = usage;
     this.cooldowns = new Map(); // providerId -> timestamp until which it is skipped
+    this.latency = new Map();   // providerId -> smoothed avg latency (ms)
+    this.applyConfig(config);
+  }
+
+  /** Hot-swap config (dashboard edits) without losing cooldowns/latency. */
+  applyConfig(config) {
+    this.config = config;
     this.defs = getAllDefs(config);
   }
 
   isEnabled(def) {
-    if (def.custom) return true;
+    if (def.custom) {
+      return def.enabled !== false;
+    }
     const p = this.config.providers?.[def.id];
     if (p === undefined) return true;
     return p.enabled !== false;
@@ -44,12 +53,12 @@ export class Router {
     return defs;
   }
 
-  /** All (provider, model) pairs a client may request. */
+  /** All (provider, model) pairs a client may request (static + discovered). */
   models() {
     const out = [];
     for (const def of this.orderedDefs()) {
       if (!this.usable(def)) continue;
-      for (const m of def.models || []) {
+      for (const m of new Set([...(def.models || []), ...(def.discovered || [])])) {
         out.push({ id: m, providerId: def.id, providerName: def.name });
       }
     }
@@ -61,7 +70,6 @@ export class Router {
    *  - "provider:model" → that exact provider
    *  - a known model name → providers that offer it
    *  - anything else / "auto" → all usable providers, each with its default model
-   * `mock` only answers when explicitly requested.
    */
   candidatesFor(model) {
     const defs = this.orderedDefs();
@@ -76,17 +84,16 @@ export class Router {
     }
 
     if (model && model !== 'auto') {
-      const wanted = defs.filter((d) => (d.models || []).includes(model));
+      const wanted = defs.filter((d) => [...(d.models || []), ...(d.discovered || [])].includes(model));
       const usableWanted = wanted.filter((d) => this.usable(d));
       if (usableWanted.length) {
         return usableWanted.map((d) => ({ def: d, key: this.keyFor(d), model }));
       }
-      // wanted providers exist but none usable → fall through to auto mode
     }
 
     return defs
       .filter((d) => this.usable(d))
-      .map((d) => ({ def: d, key: this.keyFor(d), model: d.models?.[0] || null }))
+      .map((d) => ({ def: d, key: this.keyFor(d), model: d.discovered?.[0] || d.models?.[0] || null }))
       .filter((c) => c.model);
   }
 
@@ -101,70 +108,92 @@ export class Router {
     if (err.status === 429) seconds = cfg['429'] ?? 60;
     else if (err.status === 401 || err.status === 403) seconds = cfg['401'] ?? 1800;
     else if (err.status >= 500) seconds = cfg['5xx'] ?? 15;
-    else seconds = 5; // network error — try again soon
+    else seconds = 5;
     this.cooldowns.set(def.id, Date.now() + seconds * 1000);
+  }
+
+  /** Fetch live model lists (Ollama, LM Studio, and enrichment for the rest). */
+  async refreshModels() {
+    const defs = this.enabledDefs().filter((d) => d.baseUrl && d.id !== 'mock');
+    await Promise.allSettled(defs.map(async (def) => {
+      const discovered = await discoverModels(def, this.keyFor(def));
+      if (discovered) def.discovered = discovered;
+    }));
   }
 
   /**
    * Route one chat request with automatic fallback.
-   * Returns { ok, providerId, providerName, model, result }
-   * where result = { json } or { stream }.
+   * Options: { ignoreCooldown } — used by the dashboard "Test provider" button.
+   * Returns { ok, providerId, providerName, model, result }.
    */
-  async chat({ model, messages, temperature, maxTokens, stream = false, signal, extra = {} }) {
+  async chat({ model, messages, temperature, maxTokens, stream = false, signal, extra = {}, ignoreCooldown = false }) {
     const compression = this.config.compression || {};
     if (compression.enabled !== false) {
       messages = pruneMessages(messages, compression);
     }
 
     let candidates = this.candidatesFor(model);
-    if (this.config.routing?.strategy === 'round-robin' && candidates.length > 1) {
+
+    const strategy = this.config.routing?.strategy || 'priority';
+    if (strategy === 'round-robin' && candidates.length > 1) {
       const key = model || 'auto';
       const idx = ((this._rr ||= {})[key] = ((this._rr[key] || 0) + 1) % candidates.length);
       candidates = [...candidates.slice(idx), ...candidates.slice(0, idx)];
+    } else if (strategy === 'latency' && candidates.length > 1) {
+      const known = candidates.filter((c) => this.latency.has(c.def.id));
+      const unknown = candidates.filter((c) => !this.latency.has(c.def.id));
+      known.sort((a, b) => this.latency.get(a.def.id) - this.latency.get(b.def.id));
+      candidates = [...known, ...unknown];
     }
 
     if (!candidates.length) {
       return {
         ok: false,
         status: 503,
-        error: 'No usable provider. Enable a keyless provider (pollinations) or add an API key in config.json / env vars.',
+        error: 'No usable provider. Add a key in the dashboard (or enable a keyless provider).',
       };
     }
 
     const errors = [];
     for (const cand of candidates) {
-      const cool = this.cooldownRemaining(cand.def);
-      if (cool > 0) {
-        errors.push(`${cand.def.id} (cooling down ${Math.ceil(cool / 1000)}s)`);
-        continue;
+      if (!ignoreCooldown) {
+        const cool = this.cooldownRemaining(cand.def);
+        if (cool > 0) {
+          errors.push(`${cand.def.id} (cooling down ${Math.ceil(cool / 1000)}s)`);
+          continue;
+        }
       }
+      const t0 = Date.now();
       try {
         let result;
         if (cand.def.id === 'mock') {
           result = mockChat({ model: cand.model, messages, temperature, maxTokens });
+        } else if (cand.def.format === 'anthropic') {
+          result = await anthropicChat(cand.def, cand.key, {
+            model: cand.model, messages, temperature, maxTokens, stream,
+            signal, timeoutMs: this.config.timeoutMs ?? 120000,
+          });
         } else {
           result = await openAIChat(cand.def, cand.key, {
-            model: cand.model,
-            messages,
-            temperature,
-            maxTokens,
-            stream,
-            extra,
-            signal,
-            timeoutMs: this.config.timeoutMs ?? 120000,
+            model: cand.model, messages, temperature, maxTokens, stream,
+            extra, signal, timeoutMs: this.config.timeoutMs ?? 120000,
           });
         }
-
+        const latencyMs = Date.now() - t0;
         this.cooldowns.delete(cand.def.id);
+        this.latency.set(cand.def.id, this.latency.has(cand.def.id)
+          ? Math.round(this.latency.get(cand.def.id) * 0.7 + latencyMs * 0.3)
+          : latencyMs);
 
-        // Non-streaming (or synthetic streaming) → record usage now.
         if (!stream || !result.stream) {
           const tin = result.json?.usage?.prompt_tokens
             ?? estimateTokens((messages || []).map((m) => String(m.content ?? '')).join('\n'));
           const tout = result.json?.usage?.completion_tokens ?? 0;
-          this.usage.record(cand.def.id, { tokensIn: tin, tokensOut: tout });
+          this.usage.record(cand.def.id, { tokensIn: tin, tokensOut: tout, latencyMs });
+        } else {
+          // streaming: record a request with latency; tokens counted in handler
+          this.usage.record(cand.def.id, { latencyMs });
         }
-        // Real upstream streaming → the HTTP handler counts output tokens as they flow.
 
         return { ok: true, providerId: cand.def.id, providerName: cand.def.name, model: cand.model, result };
       } catch (err) {
@@ -174,10 +203,8 @@ export class Router {
       }
     }
 
-    return {
-      ok: false,
-      status: 503,
-      error: `All providers failed. ${errors.join(' | ')}`,
-    };
+    const msg = `All providers failed. ${errors.join(' | ')}`;
+    this.usage.log('warn', msg.slice(0, 400));
+    return { ok: false, status: 503, error: msg };
   }
 }
