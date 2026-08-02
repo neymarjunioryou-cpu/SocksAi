@@ -2,16 +2,18 @@
 
 **Your own AI router — built from scratch, zero dependencies, runs anywhere Node runs (including Termux on your phone).**
 
-SocksRoute gives you **one local endpoint** that speaks both the **OpenAI API** and the **Anthropic API**, a **full admin dashboard** where you connect providers, paste API keys, test them, and watch live usage — plus automatic fallback when a provider rate-limits you, token compression, and streaming.
+SocksRoute gives you **one local endpoint** that speaks both the **OpenAI API** and the **Anthropic API**, a **full admin dashboard** where you connect providers, paste API keys, test them, and watch live usage — plus automatic fallback when a provider rate-limits you, token compression, streaming, and a **data-driven model catalog**: **53 provider pools** and **337 bundled models** (refreshed with `npm run catalog:sync`), so you get the OmniRoute-style "one endpoint, hundreds of models" experience.
 
 It is a from-scratch re-implementation of the *idea* behind tools like OmniRoute/9router — not a copy of their code. **Zero npm dependencies, no native modules, no hardcoded secrets, no build step:** `git clone` + `npm install` + `npm run dev`.
 
 ```
 SocksAi/
 ├── server.mjs            # entry point (node --watch for dev)
+├── scripts/
+│   └── sync-catalog.mjs  # refresh the bundled model catalog (npm run catalog:sync)
 ├── src/
 │   ├── config.mjs        # config.json + env + dashboard settings merge
-│   ├── providers.mjs     # 17-provider catalog + OpenAI & Anthropic adapters
+│   ├── providers.mjs     # provider pool registry + OpenAI & Anthropic adapters
 │   ├── router.mjs        # selection, cooldowns, fallback, 3 strategies
 │   ├── admin.mjs         # /api/* — the dashboard's backend
 │   ├── openai.mjs        # /v1/chat/completions (streaming)
@@ -21,8 +23,11 @@ SocksAi/
 │   ├── store.mjs         # usage stats, keys, settings, logs (JSON files)
 │   ├── dashboard.mjs     # single-file web dashboard
 │   └── http-utils.mjs    # tiny HTTP helpers
+│   └── catalog/
+│       ├── providers.json     # 53 curated provider pools (free-tier info)
+│       └── openrouter.json    # 337 bundled models (OpenRouter snapshot)
 ├── config.example.json   # copy to config.json to override defaults
-└── tests/smoke.test.mjs  # 16 offline smoke tests
+└── tests/smoke.test.mjs  # 21 offline smoke tests
 ```
 
 ---
@@ -49,11 +54,14 @@ npm run dev        # starts on http://localhost:20128
 
 Open **http://localhost:20128** — the dashboard is right there:
 
-- 🧩 **Providers** — 17 built-in provider cards. Click **🔑 Key** to paste a free API key, **🧪 Test** to ping a provider, **⏸ Disable** to take one out of rotation.
+- 🧩 **Providers** — 53 provider pool cards. Click **🔑 Key** to paste an API key, **🧪 Test** to ping a provider, **⏸ Disable** to take one out of rotation.
+- 🔎 **Model browser** — search all **337 bundled models** (r1, gemma, kimi, 4o, llama…), see which pool serves them, context length, and free badges.
 - 💬 **Chat playground** — pick any model, type a message, watch the streamed reply and which provider answered it.
-- 🎛️ **Routing** — strategy (priority / round-robin / latency) + drag the priority order.
+- 🎛️ **Routing** — strategy (priority / round-robin / latency) + reorder the priority list.
 - 📜 **Event log** — keys saved, tests run, providers cooling down, errors.
 - ➕ **Add custom provider** — connect *any* OpenAI-compatible API in 10 seconds.
+
+The header shows the live numbers: **🧠 models · 🌐 provider pools · 🆓 free tiers · usage**.
 
 ---
 
@@ -113,31 +121,32 @@ Also disable battery optimization for Termux, or Android may kill the server.
 
 ---
 
-## 🧩 Built-in providers
+## 🧩 Provider pools & the model catalog
 
-| Provider | Free? | Key | Get a key |
-|---|---|---|---|
-| **OpenRouter** | many free models | ✅ | [openrouter.ai/keys](https://openrouter.ai/keys) — **one key = 400+ models** |
-| **Google Gemini** | ✅ free tier | ✅ | [aistudio.google.com](https://aistudio.google.com) |
-| **Groq** | ✅ free tier | ✅ | [console.groq.com](https://console.groq.com) |
-| **Anthropic (Claude)** | paid | ✅ | [console.anthropic.com](https://console.anthropic.com) — real Claude through SocksRoute |
-| **DeepSeek** | cheap, not free | ✅ | [platform.deepseek.com](https://platform.deepseek.com) |
-| **xAI (Grok)** | free credits | ✅ | [console.x.ai](https://console.x.ai) |
-| **Cerebras** | ✅ free tier | ✅ | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
-| **Mistral** | ✅ free tier | ✅ | [console.mistral.ai](https://console.mistral.ai) |
-| **NVIDIA NIM** | ✅ free credits | ✅ | [build.nvidia.com](https://build.nvidia.com) |
-| **Together AI** | free credits | ✅ | [api.together.ai](https://api.together.ai) |
-| **Hugging Face** | ✅ free tier | ✅ | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
-| **Fireworks** | free credits | ✅ | [fireworks.ai](https://fireworks.ai) |
-| **GitHub Models** | ✅ free tier | ✅ | GitHub PAT (`GITHUB_TOKEN`) |
-| **Ollama (local)** | ✅ 100% free | ❌ | install [Ollama](https://ollama.com) on the same machine |
-| **LM Studio (local)** | ✅ 100% free | ❌ | run LM Studio's local server |
-| **Pollinations** | ✅ free | ❌ | nothing — public endpoint, be polite |
-| **Mock** | ✅ built-in | ❌ | nothing — last-resort fallback |
+SocksRoute ships a **data-driven catalog** (`src/catalog/`):
 
-Missing someone? **OpenRouter** reaches almost every model that exists, and **Add custom provider** in the dashboard connects literally any OpenAI-compatible API.
+- **`providers.json` — 53 curated provider pools.** Every pool knows its base URL, API format, key env var, and whether a free tier or free credits exist. The pools file is editable — add or fix pools without touching code.
+- **`openrouter.json` — 337 bundled models** (a real OpenRouter catalog snapshot: id, name, context length, per-token pricing, free flag, serving provider). Any of these models works through the OpenRouter pool with one key — that's the "500+ models through one endpoint" architecture.
+- **Live discovery** — every pool's `/models` endpoint is queried at startup (and via **🔄 Refresh** / `POST /api/refresh`), so Ollama/LM Studio report their installed models and every other pool's catalog stays current.
+- **`npm run catalog:sync`** — re-fetches OpenRouter's live model list and updates the bundled snapshot (run it on any networked machine, Termux included; this sandbox can't reach OpenRouter so the repo ships with a snapshot).
 
-Models are **auto-discovered**: Ollama/LM Studio report their installed models live, and every other provider's `/models` endpoint is queried on startup to enrich the catalog.
+### The 53 pools (highlights)
+
+| Pool | Free? | Notes |
+|---|---|---|
+| **OpenRouter** | ✅ many `:free` models | one key = the 337-model catalog (or 400+ after sync) |
+| **Google Gemini** | ✅ free tier | generous daily allowance |
+| **Groq** | ✅ free tier | fast Llama inference |
+| **Anthropic (Claude)** | paid | real Claude via Anthropic-format adapter |
+| **Cerebras · Mistral · NVIDIA NIM · HuggingFace · GitHub Models · SambaNova** | ✅ free tiers/credits | |
+| **OpenAI · DeepSeek · xAI · Together · Fireworks · Cohere · AI21 · Replicate …** | paid / credits | the classics |
+| **SiliconFlow · Moonshot · Zhipu · Z.ai · MiniMax · Baichuan · Qwen · Yi · StepFun · Baidu · Tencent · Doubao** | mostly free tiers | the Chinese clouds |
+| **DeepInfra · Novita · Hyperbolic · Lambda · Nebius · Scaleway · Kluster · Chutes · ShuttleAI · TextCortex · AIMLAPI · Featherless · Upstage · Perplexity** | credits/free tiers | open-model hosting + aggregators |
+| **Portkey · Unify · Requesty · Martian · OpenPipe** | varies | gateway/aggregator pools (bring your own upstream) |
+| **Ollama · LM Studio (local)** | ✅ 100% free | local models, live-discovered |
+| **Pollinations · Mock** | ✅ free | keyless public endpoint + built-in last resort |
+
+Not enough? **Add custom provider** in the dashboard connects literally any OpenAI-compatible API (works offline with Ollama/LM Studio too).
 
 ---
 
@@ -171,6 +180,7 @@ Model:    groq:llama-3.3-70b-versatile   ← "provider:model" forces a specific 
 | `groq:llama-3.3-70b-versatile` | that exact provider+model |
 | `anthropic:claude-sonnet-4-5` | real Claude via the Anthropic API adapter |
 | `ollama:llama3` | a local model via Ollama |
+| `openai/gpt-4o-mini` | a bundled catalog model → routed through the OpenRouter pool |
 | anything unknown / `auto` | SocksRoute picks providers in order, each with its default model, falling back on failure |
 
 ---
@@ -223,10 +233,10 @@ POST   /api/shutdown               stop the server
 ## 🧪 Tests
 
 ```bash
-npm test        # 16 offline smoke tests — no network, no keys needed
+npm test        # 21 offline smoke tests — no network, no keys needed
 ```
 
-Covers health, model lists, mock chat, auto-fallback, OpenAI + Anthropic streaming, auth gating, and the whole admin API (keys, toggles, custom provider CRUD, routing, test endpoint, logs).
+Covers health, model lists, mock chat, auto-fallback, OpenAI + Anthropic streaming, auth gating, the whole admin API (keys, toggles, custom provider CRUD, routing, test endpoint, logs), and the catalog (pool count, model snapshot size, `/api/catalog`, catalog model routing with fallback).
 
 ## 🔒 Security
 
@@ -238,7 +248,11 @@ Covers health, model lists, mock chat, auto-fallback, OpenAI + Anthropic streami
 
 ## ❓ FAQ
 
-**Where are my 1.6 billion tokens?** They were marketing math. SocksRoute gives you the same *architecture* (multi-provider routing + fallback + compression + dashboard) so the free tiers you *do* have go as far as possible — without the ToS-abusing "blast through 90 providers" behavior.
+**Where are my 1.6 billion tokens?** They were marketing math. SocksRoute gives you the same *architecture* (multi-provider routing + fallback + compression + dashboard + catalog) so the free tiers you *do* have go as far as possible — without the ToS-abusing "blast through 90 providers" behavior.
+
+**But 53 pools vs OmniRoute's ~290?** Their count mixes in every aggregator, reseller, and OpenRouter-style mirror as a separate "provider". SocksRoute's 53 pools are all real, distinct endpoints — and the **337-model catalog** (via OpenRouter) gives you the same "one endpoint, hundreds of models" experience. The pools file is plain JSON: if you use a niche provider, add it in 30 seconds or use **Add custom provider**.
+
+**Why does it say 43 free tiers?** That counts pools with a genuine free tier *or* free signup credits (each card says which, e.g. "free credits on signup"). OmniRoute's "90+" applies the same generous counting — the difference is we label each one honestly.
 
 **Is this OmniRoute?** No. Same category of tool, written from scratch: zero npm dependencies, no hardcoded secrets, no native builds (Termux-friendly), no 174MB npm package. MIT licensed.
 

@@ -1,173 +1,57 @@
 // SocksRoute — provider registry + chat adapters.
 //
-// Every provider here speaks either the OpenAI chat-completions API
-// (`format: 'openai'`, default) or the Anthropic messages API
-// (`format: 'anthropic'`). One adapter per format covers all of them.
-// `pollinations` needs no key at all; Ollama/LM Studio talk to local
-// models; OpenRouter alone unlocks 400+ models with one free key.
+// Provider pools are data-driven: the curated catalog lives in
+// src/catalog/providers.json (~50 pools), and the model catalog in
+// src/catalog/openrouter.json (337 real models, refreshed with
+// `npm run catalog:sync`). Live model discovery (GET /models) enriches
+// every pool at runtime. Every provider speaks either the OpenAI
+// chat-completions API (`format: 'openai'`, default) or the Anthropic
+// messages API (`format: 'anthropic'`).
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { estimateTokens } from './tokens.mjs';
 
-export const PROVIDER_DEFS = [
-  {
-    id: 'mock',
-    name: 'Mock (built-in)',
-    keyless: true,
-    models: ['socks-mock'],
-    free: true,
-    note: 'Built-in test provider. No key, no network — last-resort fallback so SocksRoute never dies silently.',
-  },
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    envKey: 'GEMINI_API_KEY',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    models: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'],
-    free: true,
-    note: 'Free key at aistudio.google.com — generous daily free-tier limits.',
-  },
-  {
-    id: 'groq',
-    name: 'Groq',
-    envKey: 'GROQ_API_KEY',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-    free: true,
-    note: 'Free tier key at console.groq.com. Blazing-fast Llama models.',
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    envKey: 'OPENROUTER_API_KEY',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    models: [
-      'deepseek/deepseek-r1:free',
-      'meta-llama/llama-3.3-70b-instruct:free',
-      'openai/gpt-4o-mini:free',
-    ],
-    free: true,
-    note: 'One free key = 400+ models (many :free). The "all AI websites" key.',
-  },
-  {
-    id: 'anthropic',
-    name: 'Anthropic (Claude)',
-    envKey: 'ANTHROPIC_API_KEY',
-    baseUrl: 'https://api.anthropic.com/v1',
-    format: 'anthropic',
-    models: ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-5'],
-    free: false,
-    note: 'Paid API — the real Claude models, reached through SocksRoute so Claude Code can use any provider.',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    envKey: 'DEEPSEEK_API_KEY',
-    baseUrl: 'https://api.deepseek.com/v1',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
-    free: false,
-    note: 'Very cheap (not free). Known for excellent code.',
-  },
-  {
-    id: 'xai',
-    name: 'xAI (Grok)',
-    envKey: 'XAI_API_KEY',
-    baseUrl: 'https://api.x.ai/v1',
-    models: ['grok-3', 'grok-3-mini'],
-    free: false,
-    note: 'Free credits on signup at console.x.ai, then paid.',
-  },
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    envKey: 'CEREBRAS_API_KEY',
-    baseUrl: 'https://api.cerebras.ai/v1',
-    models: ['llama-3.3-70b'],
-    free: true,
-    note: 'Free tier key at cloud.cerebras.ai — the fastest inference hardware around.',
-  },
-  {
-    id: 'mistral',
-    name: 'Mistral',
-    envKey: 'MISTRAL_API_KEY',
-    baseUrl: 'https://api.mistral.ai/v1',
-    models: ['open-mistral-nemo', 'mistral-small-latest'],
-    free: true,
-    note: 'Free "Experiment" tier key at console.mistral.ai.',
-  },
-  {
-    id: 'nvidia',
-    name: 'NVIDIA NIM',
-    envKey: 'NVIDIA_API_KEY',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    models: ['meta/llama-3.3-70b-instruct', 'deepseek-ai/deepseek-r1', 'qwen/qwen2.5-72b-instruct'],
-    free: true,
-    note: 'Free credits at build.nvidia.com; OpenAI-compatible NIM endpoints.',
-  },
-  {
-    id: 'together',
-    name: 'Together AI',
-    envKey: 'TOGETHER_API_KEY',
-    baseUrl: 'https://api.together.xyz/v1',
-    models: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'deepseek-ai/DeepSeek-V3'],
-    free: false,
-    note: 'Free credits on signup at api.together.ai, then usage-based.',
-  },
-  {
-    id: 'huggingface',
-    name: 'Hugging Face',
-    envKey: 'HF_TOKEN',
-    baseUrl: 'https://router.huggingface.co/v1',
-    models: ['meta-llama/Llama-3.3-70B-Instruct', 'Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-R1'],
-    free: true,
-    note: 'Free monthly credits with a Hugging Face token (hf_...).',
-  },
-  {
-    id: 'fireworks',
-    name: 'Fireworks AI',
-    envKey: 'FIREWORKS_API_KEY',
-    baseUrl: 'https://api.fireworks.ai/inference/v1',
-    models: ['accounts/fireworks/models/llama-v3p3-70b-instruct', 'accounts/fireworks/models/deepseek-v3'],
-    free: false,
-    note: 'Free credits on signup at fireworks.ai, then usage-based.',
-  },
-  {
-    id: 'github-models',
-    name: 'GitHub Models',
-    envKey: 'GITHUB_TOKEN',
-    baseUrl: 'https://models.github.ai/integration/openai',
-    models: ['gpt-4o-mini', 'gpt-4.1-mini', 'o3-mini'],
-    free: true,
-    note: 'Free rate-limited tier with a GitHub account (use a PAT as the key).',
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama (local)',
-    keyless: true,
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    models: [],
-    free: true,
-    note: 'Runs 100% local models on this machine (or Termux). Start `ollama serve`, install a model, enable here.',
-  },
-  {
-    id: 'lmstudio',
-    name: 'LM Studio (local)',
-    keyless: true,
-    baseUrl: 'http://127.0.0.1:1234/v1',
-    models: [],
-    free: true,
-    note: 'Local models served by LM Studio on this machine.',
-  },
-  {
-    id: 'pollinations',
-    name: 'Pollinations',
-    keyless: true,
-    baseUrl: 'https://text.pollinations.ai/openai',
-    models: ['openai', 'mistral'],
-    free: true,
-    note: 'Truly free public endpoint, no API key. Shared community resource — be polite with it.',
-  },
-];
+const CATALOG_DIR = join(dirname(fileURLToPath(import.meta.url)), 'catalog');
 
-/** User-defined OpenAI-compatible providers from settings/config customProviders. */
+let _providersJson = null;
+function catalogProviders() {
+  if (_providersJson) return _providersJson;
+  try {
+    const raw = JSON.parse(readFileSync(join(CATALOG_DIR, 'providers.json'), 'utf8'));
+    _providersJson = (raw.providers || []).map((p) => ({ ...p }));
+  } catch {
+    _providersJson = [];
+  }
+  return _providersJson;
+}
+
+let _modelsJson = null;
+/** Bundled OpenRouter model catalog: [{id,name,context,prompt,completion,free,provider}] */
+export function loadModelCatalog() {
+  if (_modelsJson) return _modelsJson;
+  try {
+    _modelsJson = JSON.parse(readFileSync(join(CATALOG_DIR, 'openrouter.json'), 'utf8'));
+  } catch {
+    _modelsJson = [];
+  }
+  return _modelsJson;
+}
+
+/** Catalog stats used by the dashboard chips. */
+export function catalogStats() {
+  const models = loadModelCatalog();
+  const pools = catalogProviders();
+  return {
+    totalModels: models.length,
+    freeModels: models.filter((m) => m.free).length,
+    totalProviders: pools.length,
+    freeProviders: pools.filter((p) => p.free || p.keyless).length,
+  };
+}
+
+export const PROVIDER_DEFS = catalogProviders();
+
 export function getCustomDefs(config) {
   return (config.customProviders || []).map((p) => ({
     id: p.id,

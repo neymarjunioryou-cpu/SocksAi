@@ -315,3 +315,80 @@ test('admin routes require auth when apiKey is set', async () => {
   assert.equal(allowed.status, 200);
   await srv.close();
 });
+
+// ---------------------------------------------------------------------------
+// Catalog (OmniRoute-scale model coverage)
+
+test('catalog: providers.json ships a large pool list with free tiers', async () => {
+  const { PROVIDER_DEFS, catalogStats } = await import('../src/providers.mjs');
+  assert.ok(PROVIDER_DEFS.length >= 40, `expected ≥40 provider pools, got ${PROVIDER_DEFS.length}`);
+  const stats = catalogStats();
+  assert.ok(stats.totalProviders >= 40);
+  assert.ok(stats.freeProviders >= 15, `expected ≥15 free tiers, got ${stats.freeProviders}`);
+  // every pool has the required shape
+  for (const d of PROVIDER_DEFS) {
+    assert.ok(d.id && d.name, `pool ${d.id} has id/name`);
+    assert.ok(!d.baseUrl || /^https?:\/\//.test(d.baseUrl), `pool ${d.id} baseUrl valid`);
+    assert.ok(!d.format || ['openai', 'anthropic'].includes(d.format), `pool ${d.id} format valid`);
+  }
+});
+
+test('catalog: bundled openrouter.json has 300+ models incl. free ones', async () => {
+  const { loadModelCatalog } = await import('../src/providers.mjs');
+  const models = loadModelCatalog();
+  assert.ok(models.length >= 300, `expected ≥300 models, got ${models.length}`);
+  assert.ok(models.some((m) => m.free), 'some models are free');
+  for (const m of models) {
+    assert.ok(m.id && typeof m.id === 'string');
+    assert.ok(typeof m.free === 'boolean');
+  }
+});
+
+test('catalog: /api/catalog exposes stats + model list', async () => {
+  const srv = await start(makeConfig());
+  const res = await fetch(`${srv.base}/api/catalog`);
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(json.stats.totalModels >= 300);
+  assert.ok(Array.isArray(json.models) && json.models.length >= 300);
+  assert.ok(Array.isArray(json.providers) && json.providers.length >= 40);
+  await srv.close();
+});
+
+test('catalog: models() lists catalog models via the OpenRouter pool', async () => {
+  const srv = await start(makeConfig({
+    providers: {
+      mock: { enabled: true },
+      openrouter: { enabled: true, apiKey: 'sk-or-test' },
+    },
+    customProviders: [],
+  }));
+  const res = await fetch(`${srv.base}/v1/models`);
+  const json = await res.json();
+  const ids = json.data.map((m) => m.id);
+  assert.ok(ids.length >= 300, `expected 300+ models, got ${ids.length}`);
+  assert.ok(ids.some((m) => m.includes(':free')), 'catalog :free models present');
+  await srv.close();
+});
+
+test('catalog: unknown model that is in the catalog routes via OpenRouter pool (falls back to mock offline)', async () => {
+  const srv = await start(makeConfig({
+    providers: {
+      mock: { enabled: true },
+      openrouter: { enabled: true, apiKey: 'sk-or-test' },
+    },
+    customProviders: [],
+    routing: { strategy: 'priority', order: ['openrouter', 'mock'], cooldownSeconds: { 429: 60, '5xx': 15, 401: 1800 } },
+  }));
+  const { loadModelCatalog } = await import('../src/providers.mjs');
+  const someModel = loadModelCatalog().find((m) => !m.id.includes(':'))?.id || 'openai/gpt-4o-mini';
+  const res = await fetch(`${srv.base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: someModel, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  // offline: openrouter fetch fails → falls back to mock → 200 with mock provider
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-socksroute-provider'), 'mock');
+  await srv.close();
+});

@@ -197,6 +197,9 @@ export function renderDashboard(status) {
   </div>
   <div class="chips">
     <span class="chip">✅ <b>${ready}</b>/${prov.length} providers ready</span>
+    <span class="chip">🧠 <b id="chip-models">${status.catalog ? status.catalog.totalModels : 0}</b> models</span>
+    <span class="chip">🌐 <b id="chip-pools">${status.catalog ? status.catalog.totalProviders : 0}</b> provider pools</span>
+    <span class="chip">🆓 <b id="chip-free">${status.catalog ? status.catalog.freeProviders : 0}</b> free tiers</span>
     <span class="chip">⚡ <b id="chip-req">${fmt(t.requests)}</b> requests</span>
     <span class="chip">⇪ <b id="chip-in">${fmt(t.tokensIn)}</b> tokens in</span>
     <span class="chip">⇣ <b id="chip-out">${fmt(t.tokensOut)}</b> tokens out</span>
@@ -224,6 +227,19 @@ export function renderDashboard(status) {
       <textarea id="pg-input" placeholder="Ask anything… (streaming, shows which provider answers)"></textarea>
       <div id="pg-out"><span class="dim">Response will appear here.</span></div>
       <div class="pg-provider" id="pg-provider"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>🔎 Model browser <span class="dim" style="font-weight:normal;font-size:11px" id="mb-count"></span></h2>
+    <div class="box">
+      <input id="mb-search" type="search" placeholder="Search ${status.catalog ? status.catalog.totalModels : ''} models… (e.g. r1, gemma, 4o, llama, kimi)" style="width:100%;background:#0b0d13;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:12.5px;margin-bottom:10px">
+      <div class="mb-grid" id="mb-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;max-height:380px;overflow-y:auto">
+        <div class="dim" style="grid-column:1/-1;padding:8px">Loading catalog…</div>
+      </div>
+      <div style="margin-top:8px;text-align:center">
+        <button class="btn" id="mb-more" style="display:none">Show more</button>
+      </div>
     </div>
   </section>
 
@@ -315,6 +331,11 @@ export function renderDashboard(status) {
     document.getElementById('chip-out').textContent = fmt(status.totals.tokensOut);
     document.getElementById('chip-err').textContent = status.totals.errors;
     document.getElementById('chip-up').textContent = Math.round(status.uptimeSeconds / 60) + 'm';
+    if (status.catalog) {
+      document.getElementById('chip-models').textContent = status.catalog.totalModels;
+      document.getElementById('chip-pools').textContent = status.catalog.totalProviders;
+      document.getElementById('chip-free').textContent = status.catalog.freeProviders;
+    }
     const ready = status.providers.filter((p) => p.enabled && p.hasKey).length;
     document.querySelectorAll('header .chips .chip')[0].innerHTML = '<b>' + ready + '</b>/' + status.providers.length + ' providers ready';
     document.getElementById('strategy').value = status.routing?.strategy || 'priority';
@@ -529,6 +550,50 @@ export function renderDashboard(status) {
   $('#pg-input').addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendPlayground();
   });
+
+  // ---------- model browser ----------
+  const mb = { models: [], shown: 0, filter: '' };
+  function mbRow(m) {
+    const prov = m.provider || 'openrouter';
+    return '<div class="mb-item" style="background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:11px">' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center">' +
+      '<code style="color:#c9d2e3;word-break:break-all">' + esc(m.id) + '</code>' +
+      (m.free ? '<span class="badge b-ready" style="flex-shrink:0">FREE</span>' : '') +
+      '</div>' +
+      '<div class="dim" style="margin-top:3px">' + esc(m.name || '') + ' · ' + esc(prov) +
+      (m.context ? ' · ' + (m.context >= 1000 ? (m.context/1000|0) + 'k' : m.context) + ' ctx' : '') +
+      '</div></div>';
+  }
+  function mbRender() {
+    const list = document.getElementById('mb-list');
+    const q = mb.filter.toLowerCase();
+    const filtered = q ? mb.models.filter((m) => (m.id + ' ' + (m.name || '')).toLowerCase().includes(q)) : mb.models;
+    document.getElementById('mb-count').textContent = filtered.length + ' of ' + mb.models.length + (q ? ' (filtered)' : '');
+    list.innerHTML = '';
+    const slice = filtered.slice(0, mb.shown);
+    slice.forEach((m) => { list.insertAdjacentHTML('beforeend', mbRow(m)); });
+    if (!slice.length) list.innerHTML = '<div class="dim" style="grid-column:1/-1;padding:8px">No models match.</div>';
+    const more = document.getElementById('mb-more');
+    more.style.display = filtered.length > mb.shown ? 'inline-block' : 'none';
+    more.onclick = () => { mb.shown += 100; mbRender(); };
+  }
+  async function loadCatalog() {
+    try {
+      const c = await api('GET', '/api/catalog');
+      mb.models = c.models || [];
+      mb.shown = 100;
+      document.getElementById('chip-models').textContent = c.stats?.totalModels ?? mb.models.length;
+      document.getElementById('chip-pools').textContent = c.stats?.totalProviders ?? 0;
+      document.getElementById('chip-free').textContent = c.stats?.freeProviders ?? 0;
+      mbRender();
+    } catch { /* catalog optional */ }
+  }
+  document.getElementById('mb-search').addEventListener('input', (e) => {
+    mb.filter = e.target.value.trim();
+    mb.shown = 100;
+    mbRender();
+  });
+  loadCatalog();
 
   // ---------- logs + refresh ----------
   setInterval(() => {

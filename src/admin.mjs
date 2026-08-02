@@ -49,6 +49,32 @@ export async function handleAdmin(req, res, url, ctx) {
     return true;
   }
 
+  // ---------- GET /api/catalog (model browser data) ----------
+  if (method === 'GET' && path === '/api/catalog') {
+    const { loadModelCatalog } = await import('./providers.mjs');
+    const models = loadModelCatalog();
+    const defs = router.defs.map((d) => ({
+      id: d.id,
+      name: d.name,
+      free: !!d.free || !!d.keyless,
+      keyless: !!d.keyless,
+      hasKey: router.usable(d),
+      enabled: router.isEnabled(d),
+      format: d.format || 'openai',
+      home: d.home || '',
+      note: d.note || '',
+      models: d.models || [],
+      discovered: d.discovered || [],
+    }));
+    sendJson(res, 200, {
+      stats: router.catalogStats(),
+      models: models.map((m) => ({ id: m.id, name: m.name, context: m.context, free: m.free, provider: m.provider })),
+      providers: defs,
+      synced: models.length > 0,
+    });
+    return true;
+  }
+
   // ---------- GET /api/config ----------
   if (method === 'GET' && path === '/api/config') {
     sendJson(res, 200, maskedConfig(router.config));
