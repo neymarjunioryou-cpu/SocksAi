@@ -1,5 +1,5 @@
 // SocksRoute — the brain: provider selection, cooldowns, fallback, compression.
-import { getAllDefs, mockChat, openAIChat, anthropicChat, discoverModels } from './providers.mjs';
+import { getAllDefs, mockChat, openAIChat, anthropicChat, discoverModels, loadModelCatalog, catalogStats } from './providers.mjs';
 import { estimateTokens, pruneMessages } from './tokens.mjs';
 
 export class Router {
@@ -53,13 +53,27 @@ export class Router {
     return defs;
   }
 
-  /** All (provider, model) pairs a client may request (static + discovered). */
+  /** All (provider, model) pairs a client may request (static + discovered + catalog). */
   models() {
     const out = [];
+    const seen = new Set();
     for (const def of this.orderedDefs()) {
       if (!this.usable(def)) continue;
       for (const m of new Set([...(def.models || []), ...(def.discovered || [])])) {
+        if (seen.has(m)) continue;
+        seen.add(m);
         out.push({ id: m, providerId: def.id, providerName: def.name });
+      }
+    }
+    // Catalog models become routable through catalog-capable pools (OpenRouter)
+    // even without an explicit provider:model prefix — this is what makes
+    // "500+ models through one endpoint" real.
+    const catalogPool = this.defs.find((d) => d.catalog && this.usable(d));
+    if (catalogPool) {
+      for (const m of loadModelCatalog()) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        out.push({ id: m.id, providerId: catalogPool.id, providerName: catalogPool.name });
       }
     }
     return out;
@@ -69,6 +83,7 @@ export class Router {
    * Decide which providers can serve a request:
    *  - "provider:model" → that exact provider
    *  - a known model name → providers that offer it
+   *  - a model in the bundled catalog → the catalog pool (OpenRouter)
    *  - anything else / "auto" → all usable providers, each with its default model
    */
   candidatesFor(model) {
@@ -89,12 +104,30 @@ export class Router {
       if (usableWanted.length) {
         return usableWanted.map((d) => ({ def: d, key: this.keyFor(d), model }));
       }
+      // Catalog lookup — any bundled model routes through the catalog pool
+      const inCatalog = loadModelCatalog().some((m) => m.id === model);
+      const catalogPool = defs.find((d) => d.catalog && this.usable(d));
+      const mockDef = defs.find((d) => d.id === 'mock' && this.usable(d));
+      const mockCand = mockDef ? { def: mockDef, key: '', model: mockDef.models?.[0] || 'socks-mock' } : null;
+      if (inCatalog && catalogPool) {
+        return mockCand
+          ? [{ def: catalogPool, key: this.keyFor(catalogPool), model }, mockCand]
+          : [{ def: catalogPool, key: this.keyFor(catalogPool), model }];
+      }
+      if (inCatalog) {
+        // model exists but catalog pool has no key → mock as last resort
+        return mockCand ? [mockCand] : [];
+      }
     }
 
     return defs
       .filter((d) => this.usable(d))
       .map((d) => ({ def: d, key: this.keyFor(d), model: d.discovered?.[0] || d.models?.[0] || null }))
       .filter((c) => c.model);
+  }
+
+  catalogStats() {
+    return catalogStats();
   }
 
   cooldownRemaining(def) {

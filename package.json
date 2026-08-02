@@ -1,7 +1,7 @@
 {
   "name": "socksroute",
-  "version": "0.2.0",
-  "description": "SocksRoute — your own from-scratch AI router with a full admin dashboard: 17 built-in providers (free tiers + Claude + local models), one OpenAI & Anthropic endpoint, auto-fallback, token compression. Zero dependencies — runs in Termux.",
+  "version": "0.3.0",
+  "description": "SocksRoute — your own from-scratch AI router: 53 provider pools, 337 bundled models (+live discovery), full admin dashboard, one OpenAI & Anthropic endpoint, auto-fallback, token compression. Zero dependencies — runs in Termux.",
   "type": "module",
   "main": "server.mjs",
   "bin": {
@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node --watch server.mjs",
     "start": "node server.mjs",
+    "catalog:sync": "node scripts/sync-catalog.mjs",
     "test": "node --test tests/smoke.test.mjs"
   },
   "engines": {

@@ -231,6 +231,7 @@ export class UsageStore {
       uptimeSeconds: Math.round(process.uptime()),
       now: Date.now(),
       logs: this.logs,
+      catalog: router.catalogStats ? router.catalogStats() : null,
     };
   }
 }
